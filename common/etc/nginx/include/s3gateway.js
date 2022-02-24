@@ -83,7 +83,7 @@ function editAmzHeaders(r) {
     var isDirectoryHeadRequest =
         allow_listing &&
         r.method === 'HEAD' &&
-        _isDirectory(r.variables.uri_path);
+        _isDirectory(decodeURIComponent(r.variables.uri_path));
 
     /* Strips all x-amz- headers from the output HTTP headers so that the
      * requesters to the gateway will not know you are proxying S3. */
@@ -201,6 +201,8 @@ function s3auth(r) {
 
     var signature;
 
+    r.decodedUriPath = decodeURIComponent(r.variables.uri_path);
+
     var credentials = readCredentials();
     if (sigver == '2') {
         signature = signatureV2(r, bucket, credentials);
@@ -240,20 +242,20 @@ function s3BaseUri(r) {
  * @returns {string} uri for s3 request
  */
 function s3uri(r) {
-    var uriPath = r.variables.uri_path;
+    r.decodedUriPath = decodeURIComponent(r.variables.uri_path);
     var basePath = s3BaseUri(r);
     var path;
 
     // Create query parameters only if directory listing is enabled.
     if (allow_listing) {
-        var queryParams = _s3DirQueryParams(uriPath, r.method);
+        var queryParams = _s3DirQueryParams(r.decodedUriPath, r.method);
         if (queryParams.length > 0) {
             path = basePath + '/?' + queryParams;
         } else {
-            path = basePath + uriPath;
+            path = basePath + r.decodedUriPath;
         }
     } else {
-        path = basePath + uriPath;
+        path = basePath + r.decodedUriPath;
     }
 
     _debug_log(r, 'S3 Request URI: ' + r.method + ' ' + path);
@@ -291,12 +293,12 @@ function redirectToS3(r) {
         return;
     }
 
-    var uriPath = r.variables.uri_path;
-    var isDirectoryListing = allow_listing && _isDirectory(uriPath);
+    r.decodedUriPath = decodeURIComponent(r.variables.uri_path);
+    var isDirectoryListing = allow_listing && _isDirectory(r.decodedUriPath);
 
     if (isDirectoryListing && r.method === 'GET') {
         r.internalRedirect("@s3Listing");
-    } else if (!isDirectoryListing && uriPath === '/') {
+    } else if (!isDirectoryListing && r.decodedUriPath === '/') {
         r.internalRedirect("@error404");
     } else {
         r.internalRedirect("@s3");
@@ -320,7 +322,7 @@ function signatureV2(r, bucket, credentials) {
      * string to sign. For example, if we are requesting /bucket/dir1/ from
      * nginx, then in S3 we need to request /?delimiter=/&prefix=dir1/
      * Thus, we can't put the path /dir1/ in the string to sign. */
-    var uri = _isDirectory(r.variables.uri_path) ? '/' : r.variables.uri_path;
+    var uri = _isDirectory(r.decodedUriPath) ? '/' : r.decodedUriPath;
     var hmac = mod_hmac.createHmac('sha1', credentials.secretAccessKey);
     var httpDate = s3date(r);
     var stringToSign = method + '\n\n\n' + httpDate + '\n' + '/' + bucket + uri;
@@ -329,7 +331,7 @@ function signatureV2(r, bucket, credentials) {
 
     var s3signature = hmac.update(stringToSign).digest('base64');
 
-    return 'AWS ' + credentials.accessKeyId + ':' + s3signature;
+    return `AWS ${credentials.accessKeyId}:${s3signature}`;
 }
 
 /**
@@ -415,7 +417,7 @@ function _buildSignatureV4(r, amzDatetime, eightDigitDate, creds, bucket, region
     }
     var method = r.method;
     var baseUri = s3BaseUri(r);
-    var queryParams = _s3DirQueryParams(r.variables.uri_path, method);
+    var queryParams = _s3DirQueryParams(r.decodedUriPath, method);
     var uri;
     if (queryParams.length > 0) {
         if (baseUri.length > 0) {
@@ -464,13 +466,13 @@ function _buildSignatureV4(r, amzDatetime, eightDigitDate, creds, bucket, region
              * we encode it as JSON. By doing so we can gracefully decode it
              * when reading from the cache. */
             kSigningHash = Buffer.from(JSON.parse(fields[1]));
-            // Otherwise, generate a new signing key hash and store it in the cache
+        // Otherwise, generate a new signing key hash and store it in the cache
         } else {
             kSigningHash = _buildSigningKeyHash(creds.secretAccessKey, eightDigitDate, service, region);
             _debug_log(r, 'Writing key: ' + eightDigitDate + ':' + kSigningHash.toString('hex'));
             r.variables.signing_key_hash = eightDigitDate + ':' + JSON.stringify(kSigningHash);
         }
-        // Otherwise, don't use caching at all (like when we are using NGINX OSS)
+    // Otherwise, don't use caching at all (like when we are using NGINX OSS)
     } else {
         kSigningHash = _buildSigningKeyHash(creds.secretAccessKey, eightDigitDate, service, region);
     }
@@ -595,7 +597,9 @@ function _eightDigitDate(timestamp) {
     var month = timestamp.getUTCMonth() + 1;
     var day = timestamp.getUTCDate();
 
-    return ''.concat(_padWithLeadingZeros(year, 4), _padWithLeadingZeros(month, 2), _padWithLeadingZeros(day, 2));
+    return ''.concat(_padWithLeadingZeros(year, 4),
+        _padWithLeadingZeros(month,2),
+        _padWithLeadingZeros(day,2));
 }
 
 /**
@@ -631,7 +635,7 @@ function _amzDatetime(timestamp, eightDigitDate) {
  */
 function _padWithLeadingZeros(num, size) {
     var s = "0" + num;
-    return s.substr(s.length - size);
+    return s.substr(s.length-size);
 }
 
 /**
@@ -682,7 +686,7 @@ function _isDirectory(path) {
  * @private
  */
 function _parseBoolean(string) {
-    switch (string) {
+    switch(string) {
         case "TRUE":
         case "true":
         case "True":
